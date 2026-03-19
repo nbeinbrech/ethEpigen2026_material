@@ -1,0 +1,155 @@
+---
+title: "assignment week 4"
+author: "Nora"
+date: "2026-03-18"
+output: html_document
+---
+
+
+1) Find and download from ENCODE the peaks (i.e. bed-like format) for p300, H3K27ac and H3K27me3 in mouse embryonic stem cells (mESC) and in one differentiated tissue (heart or liver)
+when there are replicates, we recommend using the bed file denoted as “conservative IDR thresholded peaks”)
+2) Compare the signals across the two tissues, answering the following questions:
+- What is the proportion of TSS that overlap H3K27ac, H3K27me3, and the combination of both, in each tissue?
+- What is the relationship between the 3 signals (p300, H3K27ac, and H3K27me3), and is it the same in both tissues?
+- What is the relationship between regulatory elements active in mESC and in the differentiated tissue?
+
+For each question, provide figures and/or numbers (e.g. proportions of overlap, etc.), and write a paragraph describing your observations and what you think they mean.
+
+```{r}
+suppressPackageStartupMessages({
+  library(AnnotationHub)
+  library(ensembldb)
+  library(GenomicRanges)
+  library(epiwraps)
+  library(rtracklayer)
+  library(ggplot2)
+})
+
+```
+
+### Question 1
+downoading peaks for mouse embryonic stem cells (-> ES-Bruce4 cell line) and liver tissue (strain B6NCrl liver tissue postnatal (0 days))
+```{r}
+options(timeout=1800)
+download.file(url= "https://www.encodeproject.org/files/ENCFF460EOA/@@download/ENCFF460EOA.bed.gz", destfile =   "p300_mESC.bed.gz")
+peaks_p300_mESC <- rtracklayer::import("p300_mESC.bed.gz", format="narrowPeak")
+
+download.file(url= "https://www.encodeproject.org/files/ENCFF105NKG/@@download/ENCFF105NKG.bed.gz", destfile =   "H2K27me3_mESC.bed.gz")
+peaks_H3K27me3_mESC <- rtracklayer::import("H2K27me3_mESC.bed.gz", format="narrowPeak")
+
+download.file(url= "https://www.encodeproject.org/files/ENCFF212HAG/@@download/ENCFF212HAG.bed.gz", destfile =   "H3K27ac_mESC.bed.gz")
+peaks_H3K27ac_mESC <- rtracklayer::import("H3K27ac_mESC.bed.gz", format="narrowPeak")
+
+download.file(url= "https://www.encodeproject.org/files/ENCFF458DFX/@@download/ENCFF458DFX.bed.gz", destfile =   "H3K27ac_mliver.bed.gz")
+peaks_H3K27ac_mliver <- rtracklayer::import("H3K27ac_mliver.bed.gz", format="narrowPeak")
+
+download.file(url= "https://www.encodeproject.org/files/ENCFF084WCQ/@@download/ENCFF084WCQ.bed.gz", destfile =   "H2K27me3_mliver.bed.gz")
+peaks_H3K27me3_mliver <- rtracklayer::import("H2K27me3_mliver.bed.gz", format="narrowPeak")
+
+download.file(url= "https://www.encodeproject.org/files/ENCFF326YGO/@@download/ENCFF326YGO.bed.gz", destfile =   "p300_mliver.bed.gz")
+peaks_p300_mliver <- rtracklayer::import("p300_mliver.bed.gz", format="narrowPeak")
+```
+
+for mESC downloaded cell line ES-Bruce4
+for EP300 chose "conservative IDR thresholded peaks"
+for H3K27ac and H3K27me3 no such files, so I downloaded the "replicated peaks" from ENCODE4
+
+### Question 2a
+What is the proportion of TSS that overlap H3K27ac, H3K27me3, and the combination of both, in each tissue?
+```{r}
+
+ah <- AnnotationHub(localHub=TRUE)
+ensdb <- ah[["AH89211"]]
+
+#get tss sites
+tx <- transcripts(ensdb)
+tss <- resize(tx, width = 1, fix = "start")
+seqlevelsStyle(tss) <- "Ensembl"
+
+#make matrix to save overlaping proportion
+cell_types <- c("mESC", "liver")
+marks <- c("H3K27ac", "H3K27me3", "both")
+overlap_matrix <- matrix(NA, nrow = length(cell_types), ncol = length(marks),
+                         dimnames = list(cell_types, marks))
+# fill matrix for mESC
+seqlevelsStyle(peaks_H3K27ac_mESC) <- "Ensembl"
+overlap_matrix["mESC", "H3K27ac"] <- sum(overlapsAny(tss, peaks_H3K27ac_mESC))/length(tss)
+
+seqlevelsStyle(peaks_H3K27me3_mESC) <- "Ensembl"
+overlap_matrix["mESC", "H3K27me3"] <- sum(overlapsAny(tss, peaks_H3K27me3_mESC))/length(tss)
+
+overlap_matrix["mESC", "both"] <-  sum(overlapsAny(tss, peaks_H3K27ac_mESC) & overlapsAny(tss, peaks_H3K27me3_mESC)) / length(tss)
+
+#fill matrix for liver
+seqlevelsStyle(peaks_H3K27ac_mliver) <- "Ensembl"
+overlap_matrix["liver", "H3K27ac"] <- sum(overlapsAny(tss, peaks_H3K27ac_mliver))/length(tss)
+
+seqlevelsStyle(peaks_H3K27me3_mliver) <- "Ensembl"
+overlap_matrix["liver", "H3K27me3"] <- sum(overlapsAny(tss, peaks_H3K27me3_mliver))/length(tss)
+
+overlap_matrix["liver", "both"] <-  sum(overlapsAny(tss, peaks_H3K27ac_mliver) & overlapsAny(tss, peaks_H3K27me3_mliver)) / length(tss)
+
+print(overlap_matrix)
+
+```
+Description:
+In mESCs very few TSS are marked by H3K27me3, which subsequently explain that there's no TSS with both H3K27me3 and H3K27ac.
+In the liver the proportion of TSS with H3K27ac is high with around 31% which indicates that the liver has many active promoters
+
+### Question 2b
+```{r}
+
+# Proportion of H3K27ac peaks overlapping p300
+prop_ac_p300_mESC <- sum(overlapsAny(peaks_H3K27ac_mESC, peaks_p300_mESC)) / length(peaks_H3K27ac_mESC)
+
+# Proportion of H3K27me3 peaks overlapping p300
+prop_me3_p300_mESC <- sum(overlapsAny(peaks_H3K27me3_mESC, peaks_p300_mESC)) / length(peaks_H3K27me3_mESC)
+
+# Proportion of H3K27ac peaks overlapping H3K27me3
+prop_ac_me3_mESC <- sum(overlapsAny(peaks_H3K27ac_mESC, peaks_H3K27me3_mESC)) / length(peaks_H3K27ac_mESC)
+
+#same for liver 
+prop_ac_p300_liver <- sum(overlapsAny(peaks_H3K27ac_mliver, peaks_p300_mliver)) / length(peaks_H3K27ac_mliver)
+prop_me3_p300_liver <- sum(overlapsAny(peaks_H3K27me3_mliver, peaks_p300_mliver)) / length(peaks_H3K27me3_mliver)
+prop_ac_me3_liver <- sum(overlapsAny(peaks_H3K27ac_mliver, peaks_H3K27me3_mliver)) / length(peaks_H3K27ac_mliver)
+
+overlap_matrix <- matrix(NA, nrow = 2, ncol = 3,
+                         dimnames = list(c("mESC","liver"),
+                                         c("H3K27ac_p300", "H3K27me3_p300", "H3K27ac_H3K27me3")))
+
+overlap_matrix["mESC", ] <- c(prop_ac_p300_mESC, prop_me3_p300_mESC, prop_ac_me3_mESC)
+overlap_matrix["liver", ] <- c(prop_ac_p300_liver, prop_me3_p300_liver, prop_ac_me3_liver)
+
+print(overlap_matrix)
+
+```
+### Question 2c
+```{r}
+# Initialize a 2x3 matrix:
+# Rows = "retained in liver" vs "new in liver"
+# Columns = marks
+overlap_matrix <- matrix(NA, nrow = 2, ncol = 3,
+                         dimnames = list(c("retained_in_liver", "new_in_liver"),
+                                         c("H3K27ac", "H3K27me3", "p300")))
+
+# --- H3K27ac ---
+# retained: mESC peaks that overlap liver peaks
+overlap_matrix["retained_in_liver","H3K27ac"] <- sum(overlapsAny(peaks_H3K27ac_mESC, peaks_H3K27ac_mliver)) / length(peaks_H3K27ac_mESC)
+
+# new: liver peaks that did NOT overlap mESC peaks
+overlap_matrix["new_in_liver","H3K27ac"] <- sum(!overlapsAny(peaks_H3K27ac_mliver, peaks_H3K27ac_mESC)) / length(peaks_H3K27ac_mliver)
+
+# --- H3K27me3 ---
+overlap_matrix["retained_in_liver","H3K27me3"] <- sum(overlapsAny(peaks_H3K27me3_mESC, peaks_H3K27me3_mliver)) / length(peaks_H3K27me3_mESC)
+overlap_matrix["new_in_liver","H3K27me3"] <- sum(!overlapsAny(peaks_H3K27me3_mliver, peaks_H3K27me3_mESC)) / length(peaks_H3K27me3_mliver)
+
+# --- p300 ---
+overlap_matrix["retained_in_liver","p300"] <- sum(overlapsAny(peaks_p300_mESC, peaks_p300_mliver)) / length(peaks_p300_mESC)
+overlap_matrix["new_in_liver","p300"] <- sum(!overlapsAny(peaks_p300_mliver, peaks_p300_mESC)) / length(peaks_p300_mliver)
+
+# View matrix
+overlap_matrix
+
+```
+
+
