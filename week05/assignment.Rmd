@@ -1,0 +1,97 @@
+---
+title: "assignment week 5"
+author: "Nora"
+date: "2026-03-20"
+output: html_document
+---
+
+
+```{r}
+suppressPackageStartupMessages({
+  library(GenomicRanges)
+  library(SummarizedExperiment)
+  library(edgeR) # differential gene expression using neg.bin stats
+  library(epiwraps)
+  library(ggplot2)
+  library(sechm) # for plotting (features*samples) heatmaps
+})
+
+```
+
+
+## Downloading the data
+```{r}
+options(timeout=3600)
+download.file("https://ethz-ins.org/content/mouse_mm38_hippocampus.peakCounts.SE.rds", "hippocampus_peakCounts.SE.rds")
+se <- readRDS("./hippocampus_peakCounts.SE.rds")
+# rownames is empty -> add them
+rr <- rowRanges(se)
+rownames(se) <- paste0(
+  as.character(seqnames(rr)), ":",
+  start(rr), "-",
+  end(rr)
+)
+#check if it worked
+#head(rownames(se))
+#anyDuplicated(rownames(se)
+```
+
+
+
+#### adding group data to coldata of RangedSummarizedExperiment
+```{r}
+rownames <- se@colData@rownames
+condition <- sub("^(.*?)_(male|female).*", "\\1.\\2", rownames)
+se$condition <- condition
+sex <- sub("^(.*?)_(male|female).*", "\\2", rownames)
+se$sex <- sex
+stress <- condition <- sub("^(.*?)_(male|female).*", "\\1.", rownames)
+se$stress <- stress
+```
+
+
+
+## differential analysis
+```{r}
+# create DGEList (format for edgeR)
+dds_a <- edgeR::DGEList(assay(se), group=se$condition)
+# normalization with TMM
+dds_a <- edgeR::calcNormFactors(dds_a)
+
+# set up matrix & compute dispersion
+mm_b <- model.matrix(~ sex + stress, data=as.data.frame(colData(se)))
+dds_b <- estimateDisp(dds_a, mm_b)
+fit_b <- glmQLFit(dds_b, mm_b)
+# add normalized data to RangedSummarizedExperiment object
+assay(se, "logcpm") <- log1p(cpm(dds_b))
+
+
+```
+
+### comparing stressed and control animals
+```{r}
+# Test for effect of Stress (adjusted for sex)
+res_stress <- as.data.frame(topTags(glmQLFTest(fit_b, coef="stressFSS."), n=10)) 
+
+# get top10 most significant regions
+topRegions_stress <- head(row.names(res_stress),10)
+cat("Top10 regions differing between stressed and control animals:",topRegions_stress)
+
+# histogramm for effect of Stress (adjusted for sex)
+sechm(se, topRegions_stress, gaps_at="condition")
+```
+
+### comparing female vs male animals
+```{r}
+# Test for effect of Sex (adjusted for stress)
+res_sex <- as.data.frame(topTags(glmQLFTest(fit_b, coef="sexmale"), n=10))
+
+# get top10 most significant regions
+topRegions_sex <- head(row.names(res_sex),10)
+cat("Top10 regions differing between female and male animals:", topRegions_sex)
+
+# histogramm for effect of Sex (adjusted for stress)
+sechm(se, topRegions_sex, gaps_at="condition")
+```
+
+
