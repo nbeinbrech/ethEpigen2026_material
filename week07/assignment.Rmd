@@ -1,0 +1,155 @@
+---
+title: "Assignment week 7"
+author: "Nora"
+date: "2026-04-20"
+output: html_document
+---
+
+```{r}
+suppressPackageStartupMessages({
+  library(epiwraps)
+  library(AnnotationHub)
+  library(MotifDb)
+  #library(memes)
+  library(universalmotif)
+  library(ensembldb)
+  library(ggplot2)
+  library(sechm)
+  library(BSgenome.Mmusculus.UCSC.mm10)
+  library(limma)
+  library(betterChromVAR)
+})
+
+
+```
+
+
+## Part 1
+In the same dataset of ATAC on chr19 used in the first part of the practical, plot
+1) the insertion (i.e. ‘cuts’) profile of nucleosome-free fragments and
+2) the centers of nucleosome-containing fragments,
+around the high-confidence motifs of a transcription factor of your choice (one figure containing the
+two signals).
+
+
+### get sites with motif for transcription factor ATF3
+```{r}
+# get motif of ATF3
+motifs <- MotifDb::query(MotifDb, c("ATF3", "Mus"))
+motif <- motifs[["Mmusculus-HOCOMOCOv10-ATF3_MOUSE.H10MO.A"]]
+motif2 <- convert_motifs(motif, class="TFBSTools-PWMatrix")
+
+#
+ah <- AnnotationHub(localHub=TRUE)
+genome <- ah[["AH68356"]]
+# get the sequence for chr19:
+chr19 <- import(genome)["19"]
+
+# get regions with high-confidence motifs on chr19
+moi <- motifmatchr::matchMotifs(motif2, chr19, out="positions", p.cutoff=1e-5)[[1]]
+# convert to GRanges
+moi <- as(setNames(moi,names(chr19)), "GRanges")
+
+```
+
+### generate tracks
+
+```{r, eval=TRUE}
+# download bam file with ATAC data
+download.file("https://ethz-ins.org/content/w7/atac.chr19.bam", "atac.chr19.bam", mode="wb")
+download.file("https://ethz-ins.org/content/w7/atac.chr19.bam.bai", "atac.chr19.bam.bai", mode="wb")
+bam <- "atac.chr19.bam"
+
+# tracks for cuts of nucleosome-free fragments
+epiwraps::bam2bw(bam, output_bw = "nf_cuts_a.bw", paired=TRUE, binWidth=1L, type="ends", minFragLength=30,
+                 maxFragLength=120, trim=4L, extend=3L, forceSeqlevelsStyle = "Ensembl")
+
+# tracks for centers of nucleosome containing fragments
+bam2bw(bam, output_bw = "nucl_centers.bw", paired=TRUE, binWidth=5L, minFragLength=140, trim=4L,
+       maxFragLength=600, type="center", extend=10L, forceSeqlevelsStyle = "Ensembl")
+
+```
+### plot profile around motifs
+```{r}
+# list of tracks
+tracks <- list.files(pattern="bw$")
+names(tracks) <- gsub("\\.bw","",basename(tracks))
+
+# extract signals around the motif occurences
+# we zoom in to 300bp around the motif centers, in windows of 5bp
+sm <- signal2Matrix(tracks, moi, w=5, extend=300)
+
+# plot the signals in heatmap:
+# plotEnrichedHeatmaps(sm, trim=0.95, multiScale = TRUE, axis_name = "0")
+
+# plot aggregated signals
+d <- meltSignals(sm[,c("nf_cuts_a", "nucl_centers")])
+ggplot(d, aes(position, mean, colour=sample)) + geom_line(size=1.2)
+```
+
+
+
+
+## Part 2
+In the peak counts dataset from stressed brains that we used in the second part of the practical,
+identify motifs that change in accessibility between males and females, and plot a heatmap of the
+deviations for the top few candidates motifs.
+
+### download data set
+```{r, eval=TRUE}
+download.file("https://ethz-ins.org/content/mouse_mm38_hippocampus.peakCounts.SE.rds", "peakCounts.rds", mode="wb")
+
+se <- readRDS("peakCounts.rds")
+```
+
+### Annotate regions
+
+```{r}
+# we restrict the regions to standard chromosomes and change the seq level style to match the genome
+se <- GenomeInfoDb::keepStandardChromosomes(se, pruning.mode = "coarse")
+seqlevelsStyle(se) <- "UCSC"
+se <- addGCBias(se, genome=BSgenome.Mmusculus.UCSC.mm10)
+```
+
+#### get motifs
+```{r}
+# download motifs (archetypes)
+download.file("https://hocomoco14.autosome.org/final_bundle/hocomoco14/H14CORE-CLUSTERED/H14CORE-CLUSTERED_pwm.tar.gz", "H14CORE_clusters.tar.gz")
+untar("H14CORE_clusters.tar.gz")
+lf <- list.files("H14CORE-CLUSTERED/pwm/", full=TRUE)
+archetypes_motifs <- lapply(lf, read_matrix, headers = ">", positions = "rows")
+
+# convert motifs for motifmatchr
+archetypes_motifs <- do.call(TFBSTools::PWMatrixList, convert_motifs(archetypes_motifs, class="TFBSTools-PWMatrix"))
+names(archetypes_motifs) <- make.unique(sapply(archetypes_motifs, \(x) gsub("\\..+","",x@name)))
+```
+
+#### scan motif matches
+```{r}
+matches <- motifmatchr::matchMotifs(archetypes_motifs, se, genome=BSgenome.Mmusculus.UCSC.mm10)
+```
+
+
+
+### Differential analysis with deviation
+```{r}
+# get motif deviations
+dev <- betterChromVAR(se, matches)
+
+# name groups
+dev$stress <- ifelse(grepl("FSS", colnames(dev)), "Stressed", "Control")
+dev$sex <- ifelse(grepl("female", colnames(dev), ignore.case = TRUE), 
+                  "Female", "Male")
+
+design <- model.matrix(~stress + sex, data=as.data.frame(colData(dev)))
+
+fit <- eBayes(lmFit(assay(dev, "z"), design))
+res <- as.data.frame(topTable(fit, coef = "sexMale" , number = Inf))
+res$motif <- row.names(res)
+# ggplot(res, aes(logFC, -log10(adj.P.Val), label=motif)) + geom_text()
+
+# visualize top hits as heatmap
+sechm(dev, head(row.names(res)), gaps_at="sex", assayName = "z")
+```
+
+
