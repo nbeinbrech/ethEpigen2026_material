@@ -1,0 +1,136 @@
+---
+title: "assigment week 8"
+author: "Nora"
+date: "2026-04-27"
+output: html_document
+---
+
+```{r setup}
+suppressPackageStartupMessages({
+  library(epiwraps)
+  library(ggplot2)
+  library(AnnotationHub)
+  library(ensembldb)
+  library(edgeR)
+  library(rtracklayer)
+  library(BiocParallel)
+  library(bsseq)   # Class and tools to analyze bisulfite sequencing data at CpG-level
+  library(DMRcate) # Identification of differentially-methylated regions
+  library(dplyr)
+})
+```
+
+## Part 1
+Plot a heatmap of the methylation levels of the genes in top 5 DMR regions (from the practical) located on chr1. You may either do this as we did for promoters during the practical (i.e. using getMeth()), or using signal2Matrix() and plotEnrichedHeatmaps().
+
+### get genes from top 5 DMR regions
+```{r}
+# download file with DMR regions
+DMR <- readRDS("dmr.rds")
+
+# filter for chromosome 1
+DMR_chr1 <- DMR[DMR@seqnames == "chr1"]
+
+# get top 5 DMR (selected based on min_smoothed_fdr)
+DMR_top5 <- head(DMR_chr1, 5)
+genes_top5_DMR <- DMR_top5$overlapping.genes
+genes_top5_DMR <- genes_top5_DMR[!is.na(genes_top5_DMR)]
+genes_top5_DMR <- unlist(strsplit(genes_top5_DMR, ",\\s*"))
+```
+
+
+```{r}
+bs <- readRDS("ESC_astrocytes_BSseq.rds")
+# remove CpGs that have 0 coverage in some samples:
+bs <- bs[rowSums(assay(bs,"Cov")>0)==ncol(bs),]
+bs <- BSmooth(bs, BPPARAM=MulticoreParam(2, progress=TRUE))
+
+
+########
+genes <- readRDS("hg19_chr1_genes.rds")
+myGenes <- genes[genes$symbol %in% genes_top5_DMR]
+
+metgenes <- bsseq::getMeth(bs, regions=myGenes, what="perRegion")
+colnames(metgenes) <- colnames(bs)
+rownames(metgenes) <- myGenes$symbol
+pheatmap(metgenes, name="methylation", main = "Methylation of gene bodies of top 5 DMR regions")
+
+# CD46P1 is a pseudogene and therefor not included in the  Granges object "genes"
+```
+
+
+
+## Part 2
+Use the differentially-methylated regions from the practical, and compare those changes to changes in accessibility. For the latter, you can download differential accessibility results from here:
+https://www.ethz-ins.org/content/ATAC_AstroVsESC_subset.rds Given these two datasets, figure out a way (visualization/analysis) of assessing the extent of agreement (or disagreement) between changes in these two modalities. Describe what you did and what it means in a sentence or two.
+
+### download ATACseq data
+```{r}
+download.file("https://www.ethz-ins.org/content/ATAC_AstroVsESC_subset.rds", "ATACseq.gz")
+ATACseq <- readRDS("ATACseq.gz")
+
+
+```
+
+### visualize comparison between DNA methylation and chromatin accessibility
+used barplot idea from following paper https://pmc.ncbi.nlm.nih.gov/articles/PMC8897925/#Sec11
+```{r}
+# add column defining if differentially accessibility is opening or closing
+mcols(ATACseq)$category <- with(mcols(ATACseq), ifelse(
+  FDR < 0.05 & logFC > 0, "Opening",
+  ifelse(FDR < 0.05 & logFC < 0, "Closing", "Stable")
+))
+
+# add column defining if DMR regions have increased vs decreased methylation
+DMR_sign <- DMR[DMR$HMFDR < 0.05]
+DMR_sign$direction <- ifelse(DMR_sign$meandiff < 0,
+                             "Decreased Methylation",
+                             "Increased Methylation")
+# find DAR that overlap DMRs & combine results in a dataframe
+hits <- findOverlaps(DMR_sign, ATACseq)
+df <- data.frame(
+  DMR_id = queryHits(hits),
+  direction = mcols(DMR_sign)$direction[queryHits(hits)],
+  category = mcols(ATACseq)$category[subjectHits(hits)]
+)
+# if one DMR is overlaped by multiple DARs, select accessibility category that appears the most in that DMR
+df_dmr <- df %>%
+  group_by(DMR_id, direction) %>%
+  summarize(
+    category = names(sort(table(category), decreasing = TRUE))[1],
+    .groups = "drop"
+  )
+
+#make table & add percent
+plot_df <- df_dmr %>%
+  count(direction, category)
+plot_df <- plot_df %>%
+  group_by(direction) %>%
+  mutate(percent = n / sum(n))
+
+# plot results as barplot
+ggplot(plot_df, aes(x = direction, y = percent, fill = category)) +
+  geom_bar(stat = "identity", width = 0.6) +
+  
+  # counts inside bars
+  geom_text(aes(label = n),
+            position = position_stack(vjust = 0.5),
+            size = 4) +
+  
+  scale_y_continuous(labels = scales::percent_format()) +
+  
+  labs(
+    x = NULL,
+    y = "% of Differentially Methylated Regions 
+    that overlap types of differential chromatin
+    accessibility Regions",
+    fill = "accesibility of chromatin"
+  ) +
+  
+  theme_classic() +
+  theme(legend.position = "right")
+
+```
+
+The plot shows that in DMR regions with decreased methylation have a higher proportion of opening chromatin/accessible DNA, while DMR with increased methylation show the opposite: more closing chromatin. This relationship is not surprising, however I expected it to be even stronger.
+Also there's much more regions with decreased methylation compared to increased methylation
