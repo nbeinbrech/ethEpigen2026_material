@@ -1,0 +1,112 @@
+---
+title: "Assignment week 9"
+author: "Nora"
+date: "2026-05-12"
+output: html_document
+---
+
+```{r}
+suppressPackageStartupMessages({
+  library(GenomicRanges)
+  library(epiwraps)
+  library(ggplot2)
+  library(rGREAT) # Gene Ontology enrichment among genomic regions
+})
+```
+
+
+
+## Part1 
+Download and decompress the following archive:
+https://ethz-ins.org/content/clustering_assignment.zip
+This contains the bigwig files and peaks (bed) files for three TFs of the CREB family (all restricted to chr1; aligned against the hg38 genome)
+
+#### downloading data
+```{r, eval=FALSE}
+options(timeout = 6000)
+download.file("https://ethz-ins.org/content/clustering_assignment.zip", "clustering_assignment.zip")
+unzip("clustering_assignment.zip")
+list.files()
+```
+
+#### Prepare the regions and the tracks
+
+```{r}
+tracks <- list.files(pattern="bw$")
+
+### To get a clearer picture, focus on high-confidence peaks from each factor to define the universe of regions
+peaks <- list.files(pattern="bed$")
+# we first import the peaks
+peaks <- lapply(peaks, rtracklayer::import.bed)
+# we'll focus on the high-quality peaks
+peaks <- lapply(peaks, FUN=function(x) x[x$score>800])
+# we get the union of non-redundant regions
+regions <- reduce(unlist(GRangesList(peaks)))
+
+```
+
+
+## Part 2 Clustering and visualization
+Use clustering and visualization to illustrate the relationship between the binding of the different proteins
+```{r}
+
+ese <- signal2Matrix(tracks, regions, extend=2000)
+set.seed(123)  # to ensure that it gives the same results everytime
+
+# cluster version 1
+cl <- clusterSignalMatrices(ese, k=4)
+rowData(ese)$cluster <- cl # put cluster as rowData for later maipulation of the object
+head(rowData(ese))
+# plotting heatmap with defined colours
+mycolors <- c("1"="red", "2"="blue", "3"="darkgreen", "4"="black", "5"="purple")
+plotEnrichedHeatmaps(ese, row_split=rowData(ese)$cluster, mean_color=mycolors, colors=c("white","darkred"), use_raster = FALSE)
+
+
+# Clustering using relative signal:
+set.seed(123)
+cl <- clusterSignalMatrices(ese, k=5, scaleRows = TRUE)
+rowData(ese)$cluster <- cl # put cluster as rowData for later maipulation of the object
+d <- meltSignals(ese, splitBy=cl)
+ggplot(d, aes(position, mean, colour=sample)) + geom_line() + facet_wrap(~split)
+plotEnrichedHeatmaps(ese, row_split = cl, scale_rows = "global", mean_color=mycolors, use_raster = FALSE)
+```
+
+
+
+## Part 3 Enrichement analysis
+Use enrichment analysis (either GO or motif) on at least one of the clusters
+Write a paragraph describing your results
+Save your assignment in a R markdown named assignment.Rmd, render it, and push the html file to this folder in your github repository
+
+
+Find what's enriched in cluster 2 with respect to the clusters:
+```{r}
+# splitting the regions by cluster:
+split_regions <- split(rowRanges(ese), rowData(ese)$cluster)
+lengths(split_regions)
+
+res <- great(split_regions[["2"]], gene_sets="GO:BP", tss_source="hg38", 
+             background=regions, cores=2) # background is set to regions -> cluster 2 is compared with the other clusters
+
+bp <- getEnrichmentTables(res)
+
+head(bp)
+
+```
+
+We plot the top Biological Processes:
+```{r, fig.width=9, fig.height=6}
+ggplot(head(bp,15), aes(fold_enrichment, reorder(description, p_adjust), 
+                        size=observed_region_hits, color=-log10(p_adjust))) + 
+  geom_point() + scale_color_viridis_c()
+```
+The background for calculating the enrichment was set to the regions. So we can check the enrichment of GO terms of cluster 2 compared to the remaining 4 clusters. 
+From the plot before we know that in cluster 2 there's a high level of Creb1 binding but low binding of the other two proteins (Creb3 & Creb3L1).
+Multiple GO terms are related to the nervous system, which is not surprising as Creb1 is known to be important for learning/memory and neural function. In addition there are 3 GO terms with a high fold enrichment but low observed region hits and therefore not surprising also a low p-value: myofibril assembly, endocrine system development, protein localization to cell surface.
+The GO term "central neervous system neuron differentiation" shows a high fold-enrichment and at the same time also a low p-value (eventhough the observed region hits is not high.) So in a next step I would be interesting to take a closer look at that GO-term.
+
+
+
+
+
+
